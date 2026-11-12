@@ -82,7 +82,7 @@ Response (200), shortened from a real UAT run:
   "diagnoses": [{ "id": "dx1", "visitId": "v1", "diagnosis": "…", "icdCode": "E11.5", "type": "Secondary", "status": "Final" }],
   "medications": [{ "id": "rx1", "visitId": "v1", "name": "…", "dose": "1 Drop", "route": "…", "frequency": "Every 8 hours",
                     "startFrom": "…", "endAt": "2026-11-23 03:08", "prescribedOn": "…", "active": true }],
-  "results": [{ "id": "lab1", "kind": "lab", "date": "2026-10-23 02:12", "test": "GLUCOSE (REFLO)", "parameter": "GLUCOSE (REFLO)",
+  "results": [{ "id": "lab1", "visitId": "v1", "kind": "lab", "date": "2026-10-23 02:12", "test": "GLUCOSE (REFLO)", "parameter": "GLUCOSE (REFLO)",
                 "value": "145", "unit": "mg/dL", "normalRange": "70 - 141", "flag": "HIGH", "panic": false, "abnormal": true,
                 "previousValue": "206", "previousDate": "…" }],
   "surgeries": [{ "id": "sx1", "date": "…", "name": "…", "surgeon": "…" }],
@@ -107,6 +107,7 @@ Fields:
 - `isFollowUp` is true when there is a visit other than the open one. A long-stay inpatient whose only visit is the open admission has `isFollowUp: false` but still gets a summary.
 - Ids are short and stable within one response: `v` visits, `n` notes, `dx` diagnoses, `rx` medicines, `lab` results (labs, then radiology and procedure reports), `sx` surgeries, `al` allergies, `vt1` vitals.
 - `results[].flag`: numeric labs are flagged from the HIS reference and panic limits (`PANIC LOW`, `PANIC HIGH`, `LOW`, `HIGH`, `NORMAL`). For text results (cultures, reports) `panic` and `abnormal` come from the HIS order flag and there is no `flag`.
+- `results[].visitId` links a result to its visit, matched on the row's `AdmissionID` (the API parameter is `AdmissionID`, and `Admissionid` is read too because other lists in the same payload spell it that way). It is absent when that admission is not among the kept visits; the result is still shown, never dropped over the join.
 
 Model and limits: `SUMMARY_MODEL` (default `gemini-3.5-flash`) with thinking level "low" (the default thinking took about 15 s). The chat agents keep `MODEL` (flash-lite). The LLM timeout is 25 s, and the HIS timeout for this call is 30 s. A typical run is about 6.5 s (HIS about 2 to 4 s, LLM about 4.4 s, about 11,000 input tokens).
 
@@ -137,7 +138,7 @@ Found on 2026-11-10 in `Downloads\DoctorPortalAPI 3\DoctorPortalAPI`; it is not 
 | `PatientClinicalExaminationMetricsModelDataList` (notes) | `Pr_FetchPatientChiefComplaintAndExaminations_CCH` | Admissionid, VisitDate, DoctorName, Specialisation, ChiefComplaint, HistoryofPresentIllness, PhysicalExamination, AssessmentPlan, Blocked | **SSN**, PatientName, `Copied*`, audit columns |
 | `PatientDiagnosisMetricsModelDataList` | `Pr_FetchPatientDiseases_CCH` | AdmissionID, DiseaseName, Code, DiagnosisType, DiagnosisStatus, Remarks, DoctorName, Blocked | **SSN**, PatientName, scoring and audit columns |
 | `MedicationPrescriptionHeaderMetricsModelDataList` | `Pr_FetchPatientOrderedOrPrescribedDrugs_CCH` | Type, Admissionid, PrescriptionDate, ItemName, Dose, DoseUoM, Strength, StrengthUOM, AdmRoute, Frequency, StartFrom, EndDateTime, Remarks, Blocked, HoldStatus, DiscontinuingRemarks | IDs |
-| `LabTestResultDetailMetricsModelDataList` | `PR_FetchTestResults_CCH` with `@TBL=1` | OrderDate, TestName, ParameterName, Value, UOM, MinLimit, MaxLimit, IsPanic, IsAbnormal, ResultVerifiedAt | "…By" staff names |
+| `LabTestResultDetailMetricsModelDataList` | `PR_FetchTestResults_CCH` with `@TBL=1` | AdmissionID, OrderDate, TestName, ParameterName, Value, UOM, MinLimit, MaxLimit, IsPanic, IsAbnormal, ResultVerifiedAt | "…By" staff names |
 | `RadiologyTestResultDetailMetricsModelDataList` | same, `@TBL=2` | same as lab | same as lab |
 | `ProcedureTestResultDetailMetricsModelDataList` | same, `@TBL=3` | same as lab | same as lab |
 | `PatientSurgeryTrackingMetricsModelDataList` | `Pr_FetchPatientAdmissionSurgery_CCH` | SurgeryDate, SurgeryName, Code, DoctorName, SurgeryType | UHID, PatientName |

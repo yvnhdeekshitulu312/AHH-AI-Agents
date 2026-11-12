@@ -65,6 +65,31 @@ describe('normalizeLastVisitsInfo', () => {
     ]);
   });
 
+  it('links each result to its visit by AdmissionID, and keeps results of visits that were dropped', () => {
+    expect(data.results.map((r) => [r.id, r.parameter ?? r.test, r.visitId])).toEqual([
+      ['lab1', 'Potassium', 'v3'],
+      ['lab2', 'Result', 'v2'],
+      ['lab3', 'HbA1c', 'v2'],
+      ['lab4', 'Sodium', 'v3'],
+      // Admission 3000 is older than the 3 kept visits: the report is still shown, without a visitId.
+      ['lab5', 'Chest X-ray', undefined],
+    ]);
+  });
+
+  it('also reads the lowercase Admissionid spelling the HIS uses in some lists', () => {
+    const lowercase = normalizeLastVisitsInfo(
+      {
+        ...lastVisitsInfoResponse,
+        RadiologyTestResultDetailMetricsModelDataList: [
+          { Admissionid: '5002', OrderDate: '02-Oct-2026 11:00', TestName: 'Chest X-ray', Value: 'No acute findings.' },
+        ],
+      },
+      '9001',
+      TODAY,
+    );
+    expect(lowercase.results.at(-1)).toMatchObject({ test: 'Chest X-ray', visitId: 'v2' });
+  });
+
   it('keeps the latest value per test with the previous one, and drops noise and old rows', () => {
     const hba1c = data.results.find((r) => r.test === 'HbA1c')!;
     expect(hba1c).toMatchObject({ value: '8.9', unit: '%', normalRange: '4 - 5.6', previousValue: '7.8', date: '2026-09-20 10:00' });

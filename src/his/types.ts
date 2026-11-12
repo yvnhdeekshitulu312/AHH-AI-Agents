@@ -240,6 +240,12 @@ export interface RawLastVisitMedication {
 
 /** Lab, radiology and procedure rows share these fields. */
 export interface RawLastVisitTestResult {
+  /**
+   * The admission the result belongs to. The API parameter is AdmissionID; `Admissionid` is read too
+   * because the examination and medication lists of the same payload spell it that way.
+   */
+  AdmissionID?: string;
+  Admissionid?: string;
   TestOrderItemID?: string;
   OrderDate?: string;
   TestName?: string;

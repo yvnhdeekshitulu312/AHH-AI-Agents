@@ -261,18 +261,18 @@ export const lastVisitsInfoResponse: RawLastVisitsInfoResponse = {
   ],
   LabTestResultDetailMetricsModelDataList: [
     // Flags are order-level, as in the real API: every row of an order carries the same IsPanic / IsAbnormal.
-    { TestOrderItemID: 'L0', OrderDate: '15-Jun-2026 08:00', TestName: 'HbA1c', ParameterName: 'HbA1c', Value: '7.80000', UOM: '[%]', MinLimit: '4.00000', MaxLimit: '5.60000', IsPanic: 'False', IsAbnormal: 'True' },
-    { TestOrderItemID: 'L1', OrderDate: '20-Sep-2026 08:00', ResultVerifiedAt: '20-Sep-2026 10:00', TestName: 'HbA1c', ParameterName: 'HbA1c', Value: '8.9', UOM: '[%]', MinLimit: '4.00000', MaxLimit: '5.60000', IsPanic: 'False', IsAbnormal: 'True' },
-    { TestOrderItemID: 'L2', OrderDate: '01-Oct-2026 08:00', TestName: 'Electrolytes', ParameterName: 'Potassium', Value: '2.4', UOM: 'mmol/L', MinLimit: '3.5', MaxLimit: '5.1', PanicMin: '2.5', PanicMax: '6.5', IsPanic: 'True', IsAbnormal: 'True' },
-    { TestOrderItemID: 'L2', OrderDate: '01-Oct-2026 08:00', TestName: 'Electrolytes', ParameterName: 'Sodium', Value: '139', UOM: 'mmol/L', MinLimit: '135', MaxLimit: '145', PanicMin: '120', PanicMax: '160', IsPanic: 'True', IsAbnormal: 'True' },
-    { TestOrderItemID: 'L2', OrderDate: '01-Oct-2026 08:00', TestName: 'Electrolytes', ParameterName: 'REMARKS', Value: 'Repeated', IsPanic: 'True', IsAbnormal: 'True' },
-    { TestOrderItemID: 'L4', OrderDate: '01-Jan-2026 08:00', TestName: 'TSH', ParameterName: 'TSH', Value: '2.1', IsPanic: 'False', IsAbnormal: 'False' },
-    { TestOrderItemID: 'L5', OrderDate: '01-Oct-2026 08:00', TestName: 'Pending test', ParameterName: 'X', Value: '' },
-    { TestOrderItemID: 'L6', OrderDate: '28-Sep-2026 08:00', TestName: 'URINE CULTURE', ParameterName: 'Result', Value: 'Growth of Escherichia coli', IsPanic: 'False', IsAbnormal: 'True' },
-    { TestOrderItemID: 'L6', OrderDate: '28-Sep-2026 08:00', TestName: 'URINE CULTURE', ParameterName: 'Sencitivity', Value: '&lt;ZoneDiameter&gt;&lt;Antibiotics&gt;…', IsPanic: 'False', IsAbnormal: 'True' },
+    { AdmissionID: '3000', TestOrderItemID: 'L0', OrderDate: '15-Jun-2026 08:00', TestName: 'HbA1c', ParameterName: 'HbA1c', Value: '7.80000', UOM: '[%]', MinLimit: '4.00000', MaxLimit: '5.60000', IsPanic: 'False', IsAbnormal: 'True' },
+    { AdmissionID: '5002', TestOrderItemID: 'L1', OrderDate: '20-Sep-2026 08:00', ResultVerifiedAt: '20-Sep-2026 10:00', TestName: 'HbA1c', ParameterName: 'HbA1c', Value: '8.9', UOM: '[%]', MinLimit: '4.00000', MaxLimit: '5.60000', IsPanic: 'False', IsAbnormal: 'True' },
+    { AdmissionID: '5001', TestOrderItemID: 'L2', OrderDate: '01-Oct-2026 08:00', TestName: 'Electrolytes', ParameterName: 'Potassium', Value: '2.4', UOM: 'mmol/L', MinLimit: '3.5', MaxLimit: '5.1', PanicMin: '2.5', PanicMax: '6.5', IsPanic: 'True', IsAbnormal: 'True' },
+    { AdmissionID: '5001', TestOrderItemID: 'L2', OrderDate: '01-Oct-2026 08:00', TestName: 'Electrolytes', ParameterName: 'Sodium', Value: '139', UOM: 'mmol/L', MinLimit: '135', MaxLimit: '145', PanicMin: '120', PanicMax: '160', IsPanic: 'True', IsAbnormal: 'True' },
+    { AdmissionID: '5001', TestOrderItemID: 'L2', OrderDate: '01-Oct-2026 08:00', TestName: 'Electrolytes', ParameterName: 'REMARKS', Value: 'Repeated', IsPanic: 'True', IsAbnormal: 'True' },
+    { AdmissionID: '5001', TestOrderItemID: 'L4', OrderDate: '01-Jan-2026 08:00', TestName: 'TSH', ParameterName: 'TSH', Value: '2.1', IsPanic: 'False', IsAbnormal: 'False' },
+    { AdmissionID: '5002', TestOrderItemID: 'L5', OrderDate: '01-Oct-2026 08:00', TestName: 'Pending test', ParameterName: 'X', Value: '' },
+    { AdmissionID: '5002', TestOrderItemID: 'L6', OrderDate: '28-Sep-2026 08:00', TestName: 'URINE CULTURE', ParameterName: 'Result', Value: 'Growth of Escherichia coli', IsPanic: 'False', IsAbnormal: 'True' },
+    { AdmissionID: '5002', TestOrderItemID: 'L6', OrderDate: '28-Sep-2026 08:00', TestName: 'URINE CULTURE', ParameterName: 'Sencitivity', Value: '&lt;ZoneDiameter&gt;&lt;Antibiotics&gt;…', IsPanic: 'False', IsAbnormal: 'True' },
   ],
   RadiologyTestResultDetailMetricsModelDataList: [
-    { TestOrderItemID: 'R1', OrderDate: '02-Oct-2026 11:00', TestName: 'Chest X-ray', Value: '<p>No acute findings.</p>', IsPanic: '0', IsAbnormal: '0' },
+    { AdmissionID: '3000', TestOrderItemID: 'R1', OrderDate: '02-Oct-2026 11:00', TestName: 'Chest X-ray', Value: '<p>No acute findings.</p>', IsPanic: '0', IsAbnormal: '0' },
   ],
   ProcedureTestResultDetailMetricsModelDataList: [],
   PatientSurgeryTrackingMetricsModelDataList: [

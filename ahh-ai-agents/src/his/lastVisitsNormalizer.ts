@@ -87,7 +87,11 @@ export interface SummaryMedication {
 
 export interface SummaryResult {
   id: string;
-  visitId: string;
+  /**
+   * The visit this result belongs to, matched on the row's AdmissionID. Absent when that admission is not
+   * among the kept visits (older or other-hospital results are still shown, never dropped over the join).
+   */
+  visitId?: string;
   kind: 'lab' | 'radiology' | 'procedure';
   date?: string;
   test?: string;
@@ -324,6 +328,7 @@ export function normalizeLastVisitsInfo(
     const flag = kind === 'lab' ? flagValue(value, { min: r.MinLimit, max: r.MaxLimit, panicMin: r.PanicMin, panicMax: r.PanicMax }) : undefined;
     const numeric = kind === 'lab' && value !== undefined && Number.isFinite(Number(value));
     return compact({
+      visitId: visitIdFor(r.AdmissionID ?? r.Admissionid),
       kind,
       date: normalizeHisDate(r.ResultVerifiedAt) ?? normalizeHisDate(r.OrderDate),
       test: str(r.TestName),
