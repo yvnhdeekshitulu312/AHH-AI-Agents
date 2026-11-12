@@ -62,13 +62,13 @@ const MONTHS: Record<string, string> = {
 };
 
 /** Trimmed string, or undefined when empty / missing. */
-function str(value: unknown): string | undefined {
+export function str(value: unknown): string | undefined {
   if (value === null || value === undefined) return undefined;
   const s = String(value).trim();
   return s === '' ? undefined : s;
 }
 
-function isTruthyFlag(value: unknown): boolean {
+export function isTruthyFlag(value: unknown): boolean {
   const s = str(value)?.toLowerCase();
   return s === '1' || s === 'true' || s === 'yes';
 }
@@ -92,12 +92,12 @@ export function normalizeHisDate(value: unknown): string | undefined {
   return hh ? `${date} ${hh.padStart(2, '0')}:${mm}` : date;
 }
 
-function visitType(patientTypeName: unknown, patientType: unknown): string | undefined {
+export function visitType(patientTypeName: unknown, patientType: unknown): string | undefined {
   return str(patientTypeName) ?? VISIT_TYPES[str(patientType) ?? ''] ?? str(patientType);
 }
 
 /** Removes undefined keys so the LLM sees fewer tokens. */
-function compact<T extends object>(obj: T): T {
+export function compact<T extends object>(obj: T): T {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
 }
 

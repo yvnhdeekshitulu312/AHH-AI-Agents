@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 const configSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().positive().default(8080),
+  PORT: z.coerce.number().int().positive().default(8787),
   HOST: z.string().default('0.0.0.0'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 
@@ -19,6 +19,8 @@ const configSchema = z.object({
 
   LLM_PROVIDER: z.enum(['google']).default('google'),
   MODEL: z.string().min(1).default('gemini-3.5-flash-lite'),
+  /** Model for the visit summary (one call per summary, so a stronger model is affordable). */
+  SUMMARY_MODEL: z.string().min(1).default('gemini-3.5-flash'),
   GOOGLE_GENERATIVE_AI_API_KEY: z.string().min(1),
 
   AUDIT_HASH_SECRET: z.string().min(16, 'AUDIT_HASH_SECRET must be at least 16 characters'),

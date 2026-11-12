@@ -1,0 +1,24 @@
+# --- Server ---
+NODE_ENV=development
+PORT=8787
+HOST=0.0.0.0
+LOG_LEVEL=info
+
+# --- Auth (v1: shared key between Doctor Portal and this service, min 32 chars) ---
+API_KEY=c284f650dae5d41329e621344b3b7e530b969903578e099c
+# Comma-separated list of allowed browser origins
+CORS_ORIGIN=http://localhost:4200
+
+# --- HIS ClinicalsAPI ---
+HIS_BASE_URL=https://his.alhammadi.med.sa/ClinicalsAPI/API
+HIS_USERNAME=CHANGE_ME
+HIS_PASSWORD=CHANGE_ME
+HIS_TIMEOUT_MS=6000
+
+# --- LLM ---
+LLM_PROVIDER=google
+MODEL=gemini-3.5-flash-lite
+GOOGLE_GENERATIVE_AI_API_KEY=CHANGE_ME
+
+# --- Audit (secret used to hash patient identifiers in logs, min 16 chars) ---
+AUDIT_HASH_SECRET=fa853b9390aec7837663f1ff32e65ab6

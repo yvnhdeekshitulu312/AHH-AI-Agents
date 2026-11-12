@@ -5,6 +5,7 @@ import type {
   RawDiagnosesResponse,
   RawLabComponentsResponse,
   RawLabResultsResponse,
+  RawLastVisitsInfoResponse,
   RawPatientProfileResponse,
   RawVisitsResponse,
   RawYearWiseVisitsResponse,
@@ -67,6 +68,8 @@ export interface HisApi {
     range: HisDateRange,
   ): Promise<RawDepartmentResultsResponse>;
   fetchLabComponents(req: LabComponentsRequest): Promise<RawLabComponentsResponse>;
+  /** Visits, notes, diagnoses, medicines, results, surgeries, allergies and vitals in one call. */
+  fetchLastVisitsInfo(patientId: string, hospitalId: string): Promise<RawLastVisitsInfoResponse>;
 }
 
 export interface HisClientOptions {
@@ -79,6 +82,9 @@ export interface HisClientOptions {
 }
 
 const SUCCESS_CODE = 200;
+
+/** PatientLastVisitsInfo took 9 s for a long-stay inpatient (9.7 MB) on 2026-11-10. */
+const LAST_VISITS_TIMEOUT_MS = 30_000;
 
 export class HisClient implements HisApi {
   private readonly authHeader: string;
@@ -163,14 +169,20 @@ export class HisClient implements HisApi {
     });
   }
 
+  /** Read-only. Note: the API currently ignores HospitalID and returns data from all AHH hospitals. */
+  fetchLastVisitsInfo(patientId: string, hospitalId: string) {
+    // Large payload (several MB for long admissions); allow more than the default HIS timeout.
+    return this.get<RawLastVisitsInfoResponse>('PatientLastVisitsInfo', { PatientID: patientId, HospitalID: hospitalId }, LAST_VISITS_TIMEOUT_MS);
+  }
+
   /** GET with Basic auth, timeout, one retry on network/5xx errors, and envelope validation. */
-  private async get<T extends HisEnvelope>(endpoint: string, params: Record<string, string>): Promise<T> {
+  private async get<T extends HisEnvelope>(endpoint: string, params: Record<string, string>, timeoutMs = this.opts.timeoutMs): Promise<T> {
     const url = `${this.opts.baseUrl}/${endpoint}?${new URLSearchParams(params).toString()}`;
     const started = Date.now();
 
     let response: Response;
     try {
-      response = await this.requestWithRetry(endpoint, url);
+      response = await this.requestWithRetry(endpoint, url, timeoutMs);
     } finally {
       this.opts.logger.debug({ his: endpoint, durationMs: Date.now() - started }, 'HIS call');
     }
@@ -190,14 +202,14 @@ export class HisClient implements HisApi {
     return body;
   }
 
-  private async requestWithRetry(endpoint: string, url: string): Promise<Response> {
+  private async requestWithRetry(endpoint: string, url: string, timeoutMs: number): Promise<Response> {
     const maxAttempts = 2;
     for (let attempt = 1; ; attempt++) {
       try {
         const response = await this.fetchImpl(url, {
           method: 'GET',
           headers: { Authorization: this.authHeader, Accept: 'application/json' },
-          signal: AbortSignal.timeout(this.opts.timeoutMs),
+          signal: AbortSignal.timeout(timeoutMs),
         });
         if (response.ok) return response;
         if (response.status >= 500 && attempt < maxAttempts) continue;

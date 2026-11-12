@@ -35,3 +35,10 @@ export class ClientAbortedError extends AppError {
     super(499, 'CLIENT_ABORTED', 'The request was cancelled.', options);
   }
 }
+
+/** The HIS could not return the patient data a feature cannot work without. */
+export class HisUnavailableError extends AppError {
+  constructor(options?: { cause?: unknown }) {
+    super(502, 'HIS_UNAVAILABLE', 'Patient records could not be loaded from the HIS. Please try again.', options);
+  }
+}

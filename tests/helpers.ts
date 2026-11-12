@@ -6,6 +6,7 @@ import {
   diagnosesResponse,
   emptyDepartmentResponse,
   labResultsResponse,
+  lastVisitsInfoResponse,
   neurologyResponse,
   potassiumComponentsResponse,
   profileResponse,
@@ -41,6 +42,7 @@ export function mockHis(): { [K in keyof HisApi]: ReturnType<typeof vi.fn<HisApi
         dept === 'radiology' ? radiologyResponse : dept === 'neurology' ? neurologyResponse : emptyDepartmentResponse,
       ),
     fetchLabComponents: vi.fn<HisApi['fetchLabComponents']>().mockResolvedValue(potassiumComponentsResponse),
+    fetchLastVisitsInfo: vi.fn<HisApi['fetchLastVisitsInfo']>().mockResolvedValue(lastVisitsInfoResponse),
   };
 }
 

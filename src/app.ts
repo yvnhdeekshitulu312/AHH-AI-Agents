@@ -7,6 +7,7 @@ import { AppError } from './core/errors.js';
 import { HisClient, type HisApi } from './his/client.js';
 import { createModelFactory, type ModelFactory } from './llm/provider.js';
 import { agentRoutes } from './routes/agents.js';
+import { summaryRoutes } from './routes/summaries.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -96,6 +97,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
 
   app.get('/health', async () => ({ status: 'ok' }));
   await app.register(agentRoutes, { his, getModel, audit });
+  await app.register(summaryRoutes, { his, getModel, audit, model: config.SUMMARY_MODEL });
 
   return app;
 }

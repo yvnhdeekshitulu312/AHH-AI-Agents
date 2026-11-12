@@ -165,3 +165,133 @@ export interface RawLabComponent {
 export interface RawLabComponentsResponse extends HisEnvelope {
   FetchLabTestComponentsListM?: RawLabComponent[];
 }
+
+// ── PatientLastVisitsInfo (DoctorPortalAPI MissingFeatureController) ─────────
+// Only the fields the visit summary uses are typed. The response also carries SSN, PatientName,
+// RegCode, PhotoPath and audit columns; those are never read.
+
+export interface RawLastVisitEpisode {
+  HospitalName?: string;
+  /** Shown as patient context (age, gender); not identifying on their own. */
+  FullAge?: string;
+  Gender?: string;
+  VisitDate?: string;
+  DischargeDate?: string;
+  AdmissionID?: string;
+  PatientType?: string;
+  DoctorName?: string;
+  SpecialisationName?: string;
+  AdmissionSource?: string;
+  DischargeStatus?: string;
+  Disposition?: string;
+  ClinicalCondtion?: string;
+  EpisodeRemarks?: string;
+}
+
+export interface RawLastVisitExamination {
+  Admissionid?: string;
+  VisitDate?: string;
+  DoctorName?: string;
+  Specialisation?: string;
+  Createdate?: string;
+  ChiefComplaint?: string;
+  HistoryofPresentIllness?: string;
+  PhysicalExamination?: string;
+  AssessmentPlan?: string;
+  Blocked?: string;
+}
+
+export interface RawLastVisitDiagnosis {
+  AdmissionID?: string;
+  VisitDate?: string;
+  DiseaseName?: string;
+  Code?: string;
+  DiagnosisType?: string;
+  DiagonosisType?: string;
+  DiagnosisStatus?: string;
+  Remarks?: string;
+  DoctorName?: string;
+  CreateDate?: string;
+  Blocked?: string;
+  DiseaseMasterBlocked?: string;
+}
+
+export interface RawLastVisitMedication {
+  Type?: string;
+  HospitalName?: string;
+  Admissionid?: string;
+  PatientType?: string;
+  PrescriptionDate?: string;
+  Doctorname?: string;
+  ItemName?: string;
+  Dose?: string;
+  DoseUoM?: string;
+  Strength?: string;
+  StrengthUOM?: string;
+  AdmRoute?: string;
+  Frequency?: string;
+  StartFrom?: string;
+  EndDateTime?: string;
+  Remarks?: string;
+  Blocked?: string;
+  DiscontinuingRemarks?: string;
+  HoldStatus?: string;
+}
+
+/** Lab, radiology and procedure rows share these fields. */
+export interface RawLastVisitTestResult {
+  TestOrderItemID?: string;
+  OrderDate?: string;
+  TestName?: string;
+  DepartmentName?: string;
+  ParameterName?: string;
+  Value?: string;
+  UOM?: string;
+  MinLimit?: string;
+  MaxLimit?: string;
+  PanicMin?: string;
+  PanicMax?: string;
+  IsPanic?: string;
+  IsAbnormal?: string;
+  ResultVerifiedAt?: string;
+}
+
+export interface RawLastVisitSurgery {
+  AdmissionID?: string;
+  HospitalName?: string;
+  SurgeryDate?: string;
+  Code?: string;
+  SurgeryName?: string;
+  DoctorName?: string;
+  SurgeryType?: string;
+}
+
+export interface RawLastVisitAllergy {
+  TypeOfallergy?: string;
+  AllergyName?: string;
+}
+
+export interface RawLastVisitVitals {
+  VitalSignDate?: string;
+  BPSystolic?: string;
+  BPDiastolic?: string;
+  Pulse?: string;
+  Respiration?: string;
+  SPO2?: string;
+  Temperature?: string;
+  Consciousness?: string;
+  O2FlowRate?: string;
+}
+
+export interface RawLastVisitsInfoResponse extends HisEnvelope {
+  PatientClinicalEpisodeMetricsModelDataList?: RawLastVisitEpisode[];
+  PatientClinicalExaminationMetricsModelDataList?: RawLastVisitExamination[];
+  PatientDiagnosisMetricsModelDataList?: RawLastVisitDiagnosis[];
+  MedicationPrescriptionHeaderMetricsModelDataList?: RawLastVisitMedication[];
+  LabTestResultDetailMetricsModelDataList?: RawLastVisitTestResult[];
+  RadiologyTestResultDetailMetricsModelDataList?: RawLastVisitTestResult[];
+  ProcedureTestResultDetailMetricsModelDataList?: RawLastVisitTestResult[];
+  PatientSurgeryTrackingMetricsModelDataList?: RawLastVisitSurgery[];
+  PatientAllergyDetailsModelDataList?: RawLastVisitAllergy[];
+  PatientVitalsMetricsModelDataList?: RawLastVisitVitals[];
+}

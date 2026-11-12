@@ -11,7 +11,7 @@ The first agent is **`patient-history`**. It answers doctors' questions about th
 ```bash
 npm install
 cp .env.example .env     # fill in HIS credentials, Gemini key, API_KEY, AUDIT_HASH_SECRET
-npm run dev              # http://localhost:8080
+npm run dev              # http://localhost:8787
 ```
 
 | Script | Purpose |
@@ -28,7 +28,7 @@ Requires Node.js 20.11 or later (the Docker image uses Node 22).
 ### `POST /v1/agents/{agentId}/ask`
 
 ```bash
-curl -X POST http://localhost:8080/v1/agents/patient-history/ask \
+curl -X POST http://localhost:8787/v1/agents/patient-history/ask \
   -H "Authorization: Bearer $API_KEY" \
   -H "X-User-Id: <doctor user id>" \
   -H "Content-Type: application/json" \
