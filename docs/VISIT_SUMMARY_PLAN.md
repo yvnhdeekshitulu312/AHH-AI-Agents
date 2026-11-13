@@ -87,6 +87,7 @@ Response (200), shortened from a real UAT run:
                 "previousValue": "206", "previousDate": "…" }],
   "surgeries": [{ "id": "sx1", "date": "…", "name": "…", "surgeon": "…" }],
   "allergies": [{ "id": "al1", "type": "Drug", "allergen": "Penicillin" }],
+  "vitals": [{ "id": "vt1", "date": "2026-10-24 07:00", "pulse": "87", "spo2": "98", "temperature": "36.6" }, { "id": "vt2", "…": "…" }],
   "latestVitals": { "id": "vt1", "date": "2026-10-24 07:00", "pulse": "87", "spo2": "98", "temperature": "36.6" },
   "summary": [
     { "text": "A 52-year-old male was admitted on 01-Jan-2025 to IP Internal Medicine.", "sourceIds": ["v1"] },
@@ -102,12 +103,16 @@ Response (200), shortened from a real UAT run:
 ```
 
 Fields:
-- `summary` (3 to 5 sentences, a clinical handover) and `highlights` (up to 5 points to check) are the only AI-written fields. Every sentence cites `sourceIds`. A sentence citing an id that is not in the data is dropped.
+- **The data sections carry every row the HIS returned** (uncapped and in display order, newest first), so the card can show the whole record. Left out: rows the HIS marks `Blocked` (deleted or confidential), rows with no content, and every non-whitelisted field (PHI). The LLM gets a reduced subset of the same object (`reduceForModel`: newest 3 visits and their notes/diagnoses/medicines, one row per drug, the latest value per test of the last 30 days, the latest vitals, long text cut) — **with the same item ids**, so a cited `lab7` resolves against the full list the card holds.
+- `summary` (3 to 5 sentences, a clinical handover) and `highlights` (up to 5 points to check) are the only AI-written fields. Every sentence cites `sourceIds`. A sentence citing an id the model was not given is dropped.
 - `highlightsStatus` is `ok` (AI text written), `none` (no history, so no LLM call, or nothing to say) or `unavailable` (the LLM failed or timed out; the data sections are still returned).
 - `isFollowUp` is true when there is a visit other than the open one. A long-stay inpatient whose only visit is the open admission has `isFollowUp: false` but still gets a summary.
-- Ids are short and stable within one response: `v` visits, `n` notes, `dx` diagnoses, `rx` medicines, `lab` results (labs, then radiology and procedure reports), `sx` surgeries, `al` allergies, `vt1` vitals.
+- Ids are short and stable within one response: `v` visits, `n` notes, `dx` diagnoses, `rx` medicines, `lab` results (labs, then radiology and procedure reports), `sx` surgeries, `al` allergies, `vt` vitals. They number the full lists, so the ids the model cites are not consecutive.
 - `results[].flag`: numeric labs are flagged from the HIS reference and panic limits (`PANIC LOW`, `PANIC HIGH`, `LOW`, `HIGH`, `NORMAL`). For text results (cultures, reports) `panic` and `abnormal` come from the HIS order flag and there is no `flag`.
-- `results[].visitId` links a result to its visit, matched on the row's `AdmissionID` (the API parameter is `AdmissionID`, and `Admissionid` is read too because other lists in the same payload spell it that way). It is absent when that admission is not among the kept visits; the result is still shown, never dropped over the join.
+- `results[].visitId` links a result to its visit, matched on the row's `AdmissionID` (the API parameter is `AdmissionID`, and `Admissionid` is read too because other lists in the same payload spell it that way). It is absent when that admission is not among the visits the API returned; the result is still shown, never dropped over the join.
+- `results[].previousValue` / `previousDate`: for labs, the value before that row in the same test's series, so a trend is visible per row. `results[].testOrderItemId` groups the parameters of one order.
+- `vitals` holds every vitals row, newest first; `latestVitals` repeats `vitals[0]` for callers that only show the latest set.
+- Size: the response is now as big as the record, where it used to be about 26 KB. For the 2026-11-10 UAT inpatient (9.7 MB raw: 768 unblocked medicine rows and 7,736 lab rows) expect single-digit MB of JSON — **not yet measured since the change, so measure it on UAT before the pilot**. The prompt is unaffected (about 6,400 tokens), since only the reduced subset is sent. If the card feels heavy over the hospital network, enable response compression (`@fastify/compress`) or add a reduced variant of the route — neither is built.
 
 Model and limits: `SUMMARY_MODEL` (default `gemini-3.5-flash`) with thinking level "low" (the default thinking took about 15 s). The chat agents keep `MODEL` (flash-lite). The LLM timeout is 25 s, and the HIS timeout for this call is 30 s. A typical run is about 6.5 s (HIS about 2 to 4 s, LLM about 4.4 s, about 11,000 input tokens).
 
@@ -155,7 +160,7 @@ Notes:
 Real response, 2026-11-10 (patient 2031262, UAT, long-stay inpatient admitted 01-Jan-2025 and still admitted):
 - The API needs Basic auth (the same HIS credentials). It returned **9.7 MB in 9 s**.
 - **Only the latest admission is returned** (1 episode), and here it is the admission open now. So the open admission is kept and marked `isCurrent`, not excluded.
-- It returns every row of that admission: 2,544 medicine rows (1,776 blocked, 768 not blocked, 101 distinct drugs, 17 still running) and 7,736 lab rows (2,711 orders, 213 distinct tests). The normalizer keeps one row per drug (the latest prescription, active first) and the latest value per test from the most recent 30 days (with its previous value). Output: **about 26 KB, about 6,400 tokens**.
+- It returns every row of that admission: 2,544 medicine rows (1,776 blocked, 768 not blocked, 101 distinct drugs, 17 still running) and 7,736 lab rows (2,711 orders, 213 distinct tests). The response returns all of those rows; the LLM prompt keeps one row per drug (the latest prescription, active first) and the latest value per test from the most recent 30 days. Prompt size: **about 26 KB, about 6,400 tokens**.
 - **`IsPanic` and `IsAbnormal` are order-level.** Every row of an order has the same value (0 of 3,080 orders are mixed): 630 in-range values are flagged abnormal, and none of the 153 "panic" rows is outside its panic limits. Numeric flags are therefore computed from MinLimit, MaxLimit, PanicMin and PanicMax (as `getLabValues` does). The order flag is used only for text results such as cultures.
 - The same note is copied forward (13 identical rows), so duplicates are collapsed. Labs include noise rows (REMARKS, SAMPLE, raw sensitivity XML), which are dropped.
 - `DiagnosisType` is a numeric code; the name is in `DiagonosisType`. Numbers come as `1.00000` and units as `[mg/dL]`.

@@ -2,19 +2,24 @@ import { compact, flagValue, isTruthyFlag, normalizeHisDate, str, visitType, typ
 import type { RawLastVisitsInfoResponse, RawLastVisitTestResult } from './types.js';
 
 /**
- * Reduces the PatientLastVisitsInfo payload to what the visit summary shows and what the LLM reads.
- * This is the PHI filter for the summary: SSN, patient name, UHID, photo and staff names are never copied.
- * Every item gets a short id (v1, dx1, rx1, lab1, al1, ...) that the LLM's highlights must cite.
+ * Turns the PatientLastVisitsInfo payload into the visit summary data.
  *
- * Verified against a real response (2026-11-10): the API returns the patient's LATEST admission only,
- * which can be the admission open right now (long-stay inpatients), with every medicine and result row
- * of that admission (thousands of rows, mostly daily re-prescriptions and repeated labs). So:
- * - the open admission is kept and marked `isCurrent`;
- * - medicines are reduced to one row per drug (latest prescription), running ones first;
- * - results are reduced to the latest value per test, from the most recent window of results;
- * - repeated (copied) notes are collapsed.
+ * Two steps, because the card and the LLM need different amounts of it:
+ *
+ * 1. `normalizeLastVisitsInfo` keeps EVERY clinical row the API returns, uncapped and in display order
+ *    (newest first), so the card can show the whole record. It is still the PHI filter: SSN, patient name,
+ *    UHID, photo and staff names are never copied, and rows the HIS marks `Blocked` (deleted or
+ *    confidential) are left out. Every item gets a short id (v1, dx1, rx1, lab1, al1, ...).
+ * 2. `reduceForModel` picks the subset that goes into the LLM prompt and KEEPS THE IDS of step 1, so a
+ *    highlight citing `lab7` resolves against the full data the card holds. Without it the prompt would
+ *    carry the whole payload (9.7 MB for a long-stay inpatient, verified 2026-11-10).
+ *
+ * What the API returns, verified against a real response (2026-11-10): the patient's LATEST admission only,
+ * which can be the admission open right now (long-stay inpatients), with every medicine and result row of
+ * that admission (thousands of rows, mostly daily re-prescriptions and repeated labs).
  */
 
+/** Caps and windows for the LLM prompt only (`reduceForModel`); the returned data is never capped. */
 export const SUMMARY_LIMITS = {
   visits: 3,
   medications: 40,
@@ -27,6 +32,7 @@ export const SUMMARY_LIMITS = {
   surgeries: 5,
   noteChars: 800,
   reportChars: 300,
+  remarkChars: 200,
 } as const;
 
 export interface SummaryVisit {
@@ -47,9 +53,11 @@ export interface SummaryVisit {
 
 export interface SummaryNote {
   id: string;
-  visitId: string;
+  /** The visit this row belongs to; absent when its admission is not in `visits`. */
+  visitId?: string;
   date?: string;
   doctor?: string;
+  specialty?: string;
   chiefComplaint?: string;
   historyOfPresentIllness?: string;
   examination?: string;
@@ -58,17 +66,19 @@ export interface SummaryNote {
 
 export interface SummaryDiagnosis {
   id: string;
-  visitId: string;
+  visitId?: string;
+  date?: string;
   diagnosis: string;
   icdCode?: string;
   type?: string;
   status?: string;
+  doctor?: string;
   remarks?: string;
 }
 
 export interface SummaryMedication {
   id: string;
-  visitId: string;
+  visitId?: string;
   name: string;
   dose?: string;
   strength?: string;
@@ -77,24 +87,31 @@ export interface SummaryMedication {
   startFrom?: string;
   endAt?: string;
   prescribedOn?: string;
+  doctor?: string;
+  hospital?: string;
+  /** Prescription or order ("Prescription", "Order", ...) as the HIS reports it. */
+  orderType?: string;
   remarks?: string;
   /** End date is today or later (or not set). */
   active: boolean;
   onHold?: boolean;
   /** Shown as a warning; the row is kept so the doctor sees it was stopped. */
   discontinued?: boolean;
+  discontinuedReason?: string;
 }
 
 export interface SummaryResult {
   id: string;
   /**
    * The visit this result belongs to, matched on the row's AdmissionID. Absent when that admission is not
-   * among the kept visits (older or other-hospital results are still shown, never dropped over the join).
+   * among the visits the API returned (the result is still shown, never dropped over the join).
    */
   visitId?: string;
   kind: 'lab' | 'radiology' | 'procedure';
   date?: string;
+  orderDate?: string;
   test?: string;
+  department?: string;
   parameter?: string;
   value?: string;
   unit?: string;
@@ -105,13 +122,16 @@ export interface SummaryResult {
   panic: boolean;
   /** From the HIS limits (numeric) or the HIS order flag (text results); never decided by the LLM. */
   abnormal: boolean;
-  /** The value before this one for the same test, when present. */
+  /** The value before this one for the same test (labs only), when present. */
   previousValue?: string;
   previousDate?: string;
+  /** HIS order item the parameter belongs to; lets the card group the parameters of one order. */
+  testOrderItemId?: string;
 }
 
 export interface SummarySurgery {
   id: string;
+  visitId?: string;
   date?: string;
   name?: string;
   code?: string;
@@ -148,13 +168,16 @@ export interface VisitSummaryData {
   results: SummaryResult[];
   surgeries: SummarySurgery[];
   allergies: SummaryAllergy[];
+  /** Every vitals row, newest first. */
+  vitals: SummaryVitals[];
+  /** `vitals[0]`, repeated for callers that only show the latest set. */
   latestVitals?: SummaryVitals;
 }
 
 const ENTITIES: Record<string, string> = { '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'" };
 
 /** Plain text from an HTML note: tags removed, common entities decoded, whitespace collapsed, length capped. */
-export function plainText(value: unknown, maxChars: number): string | undefined {
+export function plainText(value: unknown, maxChars = Number.POSITIVE_INFINITY): string | undefined {
   const s = str(value);
   if (!s) return undefined;
   const text = s
@@ -163,18 +186,23 @@ export function plainText(value: unknown, maxChars: number): string | undefined 
     .replace(/&(nbsp|amp|lt|gt|quot|#39);/g, (m) => ENTITIES[m] ?? m)
     .replace(/\s+/g, ' ')
     .trim();
+  return cap(text, maxChars);
+}
+
+/** Caps already-plain text, with an ellipsis when it was cut. */
+function cap(text: string | undefined, maxChars: number): string | undefined {
   if (!text) return undefined;
   return text.length > maxChars ? `${text.slice(0, maxChars).trimEnd()}…` : text;
 }
 
-/** "1.00000" → "1", "70.50000" → "70.5"; anything that is not a plain decimal is returned trimmed. */
+/** "1.00000" -> "1", "70.50000" -> "70.5"; anything that is not a plain decimal is returned trimmed. */
 export function tidyNumber(value: unknown): string | undefined {
   const s = str(value);
   if (s === undefined || !/^-?\d+\.\d+$/.test(s)) return s;
   return String(Number(s));
 }
 
-/** "[mg/dL]" → "mg/dL". */
+/** "[mg/dL]" -> "mg/dL". */
 function tidyUnit(value: unknown): string | undefined {
   return str(str(value)?.replace(/^\[(.*)\]$/, '$1'));
 }
@@ -200,7 +228,25 @@ function joinParts(...parts: (string | undefined)[]): string | undefined {
   return parts.filter(Boolean).join(' ') || undefined;
 }
 
+/** Keys a result row by its test and parameter, for the per-test series. */
+const testKey = (r: { test?: string; parameter?: string }) => `${r.test ?? ''}|${r.parameter ?? ''}`.toLowerCase();
+
+function groupBy<T>(rows: T[], key: (row: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const k = key(row);
+    const group = groups.get(k);
+    if (group) group.push(row);
+    else groups.set(k, [row]);
+  }
+  return groups;
+}
+
 /**
+ * Every clinical row the API returned, newest first, with no caps, windows or de-duplication.
+ * Left out: `Blocked` rows (the HIS deleted or hid them), rows with no content at all, and every field
+ * that is not whitelisted here (PHI).
+ *
  * @param currentAdmissionId the admission open in the case sheet (marked `isCurrent`).
  * @param today "YYYY-MM-DD" in hospital time; decides which medicines are still active.
  */
@@ -209,7 +255,7 @@ export function normalizeLastVisitsInfo(
   currentAdmissionId: string | undefined,
   today: string,
 ): VisitSummaryData {
-  // ── Visits (newest first; the API currently returns only the latest one) ──
+  // -- Visits: every episode, newest first (one row per admission: the API repeats it per hospital row) --
   const visits: SummaryVisit[] = (raw.PatientClinicalEpisodeMetricsModelDataList ?? [])
     .map((v) => ({
       isCurrent: currentAdmissionId !== undefined && str(v.AdmissionID) === currentAdmissionId ? true : undefined,
@@ -222,84 +268,58 @@ export function normalizeLastVisitsInfo(
       admissionId: str(v.AdmissionID),
       disposition: str(v.Disposition),
       dischargeStatus: str(v.DischargeStatus),
-      remarks: plainText(v.EpisodeRemarks, SUMMARY_LIMITS.noteChars),
+      remarks: plainText(v.EpisodeRemarks),
     }))
     .sort((a, b) => desc(a.date, b.date))
-    // The same admission can appear once per hospital row; keep the first.
     .filter((v, i, all) => !v.admissionId || all.findIndex((o) => o.admissionId === v.admissionId) === i)
-    .slice(0, SUMMARY_LIMITS.visits)
     .map((v, i) => compact({ id: `v${i + 1}`, ...v }));
 
   const visitIdByAdmission = new Map(visits.filter((v) => v.admissionId).map((v) => [v.admissionId!, v.id]));
   const visitIdFor = (admissionId: unknown) => visitIdByAdmission.get(str(admissionId) ?? '');
 
-  // ── Notes: newest first, identical (copied) notes collapsed ──
-  const notes: SummaryNote[] = [];
-  const seenNotes = new Set<string>();
-  const perVisit = new Map<string, number>();
-  const examRows = [...(raw.PatientClinicalExaminationMetricsModelDataList ?? [])]
-    .map((e) => ({ e, date: normalizeHisDate(e.Createdate) ?? normalizeHisDate(e.VisitDate) }))
-    .sort((a, b) => desc(a.date, b.date));
-  for (const { e, date } of examRows) {
-    const visitId = visitIdFor(e.Admissionid);
-    if (!visitId || isTruthyFlag(e.Blocked)) continue;
-    if ((perVisit.get(visitId) ?? 0) >= SUMMARY_LIMITS.notesPerVisit) continue;
-    const body = {
-      chiefComplaint: plainText(e.ChiefComplaint, SUMMARY_LIMITS.noteChars),
-      historyOfPresentIllness: plainText(e.HistoryofPresentIllness, SUMMARY_LIMITS.noteChars),
-      examination: plainText(e.PhysicalExamination, SUMMARY_LIMITS.noteChars),
-      assessmentPlan: plainText(e.AssessmentPlan, SUMMARY_LIMITS.noteChars),
-    };
-    if (!body.chiefComplaint && !body.historyOfPresentIllness && !body.examination && !body.assessmentPlan) continue;
-    const key = `${visitId}|${JSON.stringify(body)}`;
-    if (seenNotes.has(key)) continue;
-    seenNotes.add(key);
-    perVisit.set(visitId, (perVisit.get(visitId) ?? 0) + 1);
-    notes.push(compact({ id: `n${notes.length + 1}`, visitId, date, doctor: str(e.DoctorName), ...body }));
-  }
+  // -- Notes: every examination row, newest first (the HIS copies a note forward; all copies are kept) --
+  const notes: SummaryNote[] = (raw.PatientClinicalExaminationMetricsModelDataList ?? [])
+    .filter((e) => !isTruthyFlag(e.Blocked))
+    .map((e) => ({
+      visitId: visitIdFor(e.Admissionid),
+      date: normalizeHisDate(e.Createdate) ?? normalizeHisDate(e.VisitDate),
+      doctor: str(e.DoctorName),
+      specialty: str(e.Specialisation),
+      chiefComplaint: plainText(e.ChiefComplaint),
+      historyOfPresentIllness: plainText(e.HistoryofPresentIllness),
+      examination: plainText(e.PhysicalExamination),
+      assessmentPlan: plainText(e.AssessmentPlan),
+    }))
+    .filter((n) => n.chiefComplaint ?? n.historyOfPresentIllness ?? n.examination ?? n.assessmentPlan)
+    .sort((a, b) => desc(a.date, b.date))
+    .map((n, i) => compact({ id: `n${i + 1}`, ...n }));
 
-  // ── Diagnoses (blocked excluded, as in normalizeDiagnoses) ──
-  const seenDx = new Set<string>();
-  const diagnoses: SummaryDiagnosis[] = [];
-  for (const d of raw.PatientDiagnosisMetricsModelDataList ?? []) {
-    const visitId = visitIdFor(d.AdmissionID);
-    const diagnosis = str(d.DiseaseName);
-    if (!visitId || !diagnosis || isTruthyFlag(d.Blocked)) continue;
-    const key = `${visitId}|${diagnosis.toLowerCase()}`;
-    if (seenDx.has(key)) continue;
-    seenDx.add(key);
-    diagnoses.push(
-      compact({
-        id: `dx${diagnoses.length + 1}`,
-        visitId,
-        diagnosis,
-        icdCode: str(d.Code),
-        // DiagonosisType holds the name ("Primary"); DiagnosisType is a numeric code.
-        type: str(d.DiagonosisType) ?? str(d.DiagnosisType),
-        status: str(d.DiagnosisStatus),
-        remarks: plainText(d.Remarks, 200),
-      }),
-    );
-  }
+  // -- Diagnoses: every row (blocked excluded), newest first --
+  const diagnoses: SummaryDiagnosis[] = (raw.PatientDiagnosisMetricsModelDataList ?? [])
+    .filter((d) => !isTruthyFlag(d.Blocked) && str(d.DiseaseName))
+    .map((d) => ({
+      visitId: visitIdFor(d.AdmissionID),
+      date: normalizeHisDate(d.CreateDate),
+      diagnosis: str(d.DiseaseName)!,
+      icdCode: str(d.Code),
+      // DiagonosisType holds the name ("Primary"); DiagnosisType is a numeric code.
+      type: str(d.DiagonosisType) ?? str(d.DiagnosisType),
+      status: str(d.DiagnosisStatus),
+      doctor: str(d.DoctorName),
+      remarks: plainText(d.Remarks),
+    }))
+    .sort((a, b) => desc(a.date, b.date))
+    .map((d, i) => compact({ id: `dx${i + 1}`, ...d }));
 
-  // ── Medicines: one row per drug (latest prescription), active first, blocked excluded ──
-  const latestByDrug = new Map<string, { m: NonNullable<RawLastVisitsInfoResponse['MedicationPrescriptionHeaderMetricsModelDataList']>[number]; visitId: string; prescribedOn?: string }>();
-  for (const m of raw.MedicationPrescriptionHeaderMetricsModelDataList ?? []) {
-    const visitId = visitIdFor(m.Admissionid);
-    const name = str(m.ItemName);
-    if (!visitId || !name || isTruthyFlag(m.Blocked)) continue;
-    const prescribedOn = normalizeHisDate(m.PrescriptionDate);
-    const key = name.toLowerCase();
-    const prev = latestByDrug.get(key);
-    if (!prev || (prescribedOn ?? '') > (prev.prescribedOn ?? '')) latestByDrug.set(key, { m, visitId, prescribedOn });
-  }
-  const medications: SummaryMedication[] = [...latestByDrug.values()]
-    .map(({ m, visitId, prescribedOn }) => {
+  // -- Medicines: every prescription row (blocked excluded), newest prescription first --
+  const medications: SummaryMedication[] = (raw.MedicationPrescriptionHeaderMetricsModelDataList ?? [])
+    .filter((m) => !isTruthyFlag(m.Blocked) && str(m.ItemName))
+    .map((m) => {
       const endAt = normalizeHisDate(m.EndDateTime);
       const dose = joinParts(tidyNumber(m.Dose), str(m.DoseUoM));
       const strength = joinParts(tidyNumber(m.Strength), str(m.StrengthUOM));
       return {
-        visitId,
+        visitId: visitIdFor(m.Admissionid),
         name: str(m.ItemName)!,
         dose,
         strength: strength !== dose ? strength : undefined,
@@ -307,31 +327,37 @@ export function normalizeLastVisitsInfo(
         frequency: str(m.Frequency),
         startFrom: normalizeHisDate(m.StartFrom),
         endAt,
-        prescribedOn,
-        remarks: plainText(m.Remarks, 200),
+        prescribedOn: normalizeHisDate(m.PrescriptionDate),
+        doctor: str(m.Doctorname),
+        hospital: str(m.HospitalName),
+        orderType: str(m.Type),
+        remarks: plainText(m.Remarks),
         active: !endAt || endAt.slice(0, 10) >= today,
         onHold: isTruthyFlag(m.HoldStatus) ? true : undefined,
         discontinued: str(m.DiscontinuingRemarks) ? true : undefined,
+        discontinuedReason: plainText(m.DiscontinuingRemarks),
       };
     })
-    .sort((a, b) => Number(b.active) - Number(a.active) || desc(a.prescribedOn, b.prescribedOn))
-    .slice(0, SUMMARY_LIMITS.medications)
+    .sort((a, b) => desc(a.prescribedOn, b.prescribedOn) || a.name.localeCompare(b.name))
     .map((m, i) => compact({ id: `rx${i + 1}`, ...m }));
 
-  // ── Results: latest value per test in the recent window; panic, abnormal, then newest ──
+  // -- Results: every lab, radiology and procedure row, newest first within each kind --
   // IsPanic / IsAbnormal in this API are ORDER-level (every row of an order carries the same value;
   // verified 2026-11-10). So for numeric values the flag is computed from the HIS reference and panic
   // limits, exactly as getLabValues does; the order flag is used only for text results (cultures, reports).
   type Row = Omit<SummaryResult, 'id'>;
-  const toRow = (kind: SummaryResult['kind'], maxChars: number) => (r: RawLastVisitTestResult): Row & { numeric: boolean; orderItem?: string } => {
-    const value = kind === 'lab' ? tidyNumber(plainText(r.Value, maxChars)) : plainText(r.Value, maxChars);
-    const flag = kind === 'lab' ? flagValue(value, { min: r.MinLimit, max: r.MaxLimit, panicMin: r.PanicMin, panicMax: r.PanicMax }) : undefined;
+  const toRow = (kind: SummaryResult['kind']) => (r: RawLastVisitTestResult): Row => {
+    const value = kind === 'lab' ? tidyNumber(plainText(r.Value)) : plainText(r.Value);
+    const flag =
+      kind === 'lab' ? flagValue(value, { min: r.MinLimit, max: r.MaxLimit, panicMin: r.PanicMin, panicMax: r.PanicMax }) : undefined;
     const numeric = kind === 'lab' && value !== undefined && Number.isFinite(Number(value));
     return compact({
       visitId: visitIdFor(r.AdmissionID ?? r.Admissionid),
       kind,
       date: normalizeHisDate(r.ResultVerifiedAt) ?? normalizeHisDate(r.OrderDate),
+      orderDate: normalizeHisDate(r.OrderDate),
       test: str(r.TestName),
+      department: str(r.DepartmentName),
       parameter: str(r.ParameterName),
       value,
       unit: tidyUnit(r.UOM),
@@ -339,62 +365,32 @@ export function normalizeLastVisitsInfo(
       flag,
       panic: numeric ? flag?.startsWith('PANIC') === true : isTruthyFlag(r.IsPanic),
       abnormal: numeric ? flag !== undefined && flag !== 'NORMAL' : isTruthyFlag(r.IsAbnormal),
-      numeric,
-      orderItem: str(r.TestOrderItemID),
+      testOrderItemId: str(r.TestOrderItemID),
     });
   };
 
-  /** Drops text rows inside numeric tests (REMARKS, SAMPLE, ...) and raw machine data (sensitivity XML). */
-  const dropNoise = <T extends Row & { numeric: boolean; orderItem?: string }>(rows: T[]): Row[] => {
-    const numericOrders = new Set(rows.filter((r) => r.numeric && r.orderItem).map((r) => r.orderItem!));
-    return rows
-      .filter((r) => r.numeric || !r.orderItem || !numericOrders.has(r.orderItem))
-      .filter((r) => !/&lt;|<\w+>/.test(r.value ?? ''))
-      .map(({ numeric: _n, orderItem: _o, ...row }) => row);
-  };
-  const rank = (r: Row) => (r.panic ? 0 : r.abnormal ? 1 : 2);
-
-  /** Latest row per test (with the previous value), within `resultDays` of the newest row. */
-  const latestPerTest = (rows: Row[]): Row[] => {
-    const withValue = rows.filter((r) => r.value !== undefined && r.date);
-    const newest = withValue.reduce((max, r) => (r.date! > max ? r.date! : max), '');
-    if (!newest) return [];
-    const cutoff = minusDays(newest, SUMMARY_LIMITS.resultDays);
-    const byTest = new Map<string, Row[]>();
-    for (const r of withValue) {
-      const key = `${r.test ?? ''}|${r.parameter ?? ''}`.toLowerCase();
-      byTest.set(key, [...(byTest.get(key) ?? []), r]);
-    }
-    const latest: Row[] = [];
-    for (const group of byTest.values()) {
-      group.sort((a, b) => desc(a.date, b.date));
-      const [last, prev] = group;
-      if (!last || last.date! < cutoff) continue;
-      latest.push(prev ? { ...last, previousValue: prev.value, previousDate: prev.date } : last);
-    }
-    return latest.sort((a, b) => rank(a) - rank(b) || desc(a.date, b.date));
-  };
-
-  const labs = latestPerTest(dropNoise((raw.LabTestResultDetailMetricsModelDataList ?? []).map(toRow('lab', 100))));
-  const labPanics = labs.filter((r) => r.panic).length;
-  const reports = latestPerTest(
-    dropNoise([
-      ...(raw.RadiologyTestResultDetailMetricsModelDataList ?? []).map(toRow('radiology', SUMMARY_LIMITS.reportChars)),
-      ...(raw.ProcedureTestResultDetailMetricsModelDataList ?? []).map(toRow('procedure', SUMMARY_LIMITS.reportChars)),
-    ]),
-  );
-  const reportPanics = reports.filter((r) => r.panic).length;
-  // Never cut a panic result to fit a limit.
+  const byDateDesc = (rows: Row[]) => rows.sort((a, b) => desc(a.date, b.date));
+  const labRows = byDateDesc((raw.LabTestResultDetailMetricsModelDataList ?? []).map(toRow('lab')));
+  // Each lab row carries the value before it for the same test, so a trend is visible without a second call.
+  for (const group of groupBy(labRows, testKey).values()) {
+    group.forEach((row, i) => {
+      const previous = group.slice(i + 1).find((p) => p.value !== undefined);
+      if (!previous) return;
+      row.previousValue = previous.value;
+      row.previousDate = previous.date;
+    });
+  }
   const results: SummaryResult[] = [
-    ...labs.slice(0, Math.max(SUMMARY_LIMITS.labResults, labPanics)),
-    ...reports.slice(0, Math.max(SUMMARY_LIMITS.reports, reportPanics)),
-  ]
-    .map((r) => (r.kind === 'lab' ? r : { ...r, previousValue: undefined, previousDate: undefined }))
-    .map((r, i) => compact({ id: `lab${i + 1}`, ...r }));
+    ...labRows,
+    ...byDateDesc((raw.RadiologyTestResultDetailMetricsModelDataList ?? []).map(toRow('radiology'))),
+    ...byDateDesc((raw.ProcedureTestResultDetailMetricsModelDataList ?? []).map(toRow('procedure'))),
+  ].map((r, i) => compact({ id: `lab${i + 1}`, ...r }));
 
-  // ── Surgeries (the same surgery can appear twice) ──
+  // -- Surgeries: every row, newest first --
   const surgeries: SummarySurgery[] = (raw.PatientSurgeryTrackingMetricsModelDataList ?? [])
+    .filter((s) => str(s.SurgeryName))
     .map((s) => ({
+      visitId: visitIdFor(s.AdmissionID),
       date: normalizeHisDate(s.SurgeryDate),
       name: str(s.SurgeryName),
       code: str(s.Code),
@@ -402,40 +398,28 @@ export function normalizeLastVisitsInfo(
       type: str(s.SurgeryType),
       hospital: str(s.HospitalName),
     }))
-    .filter((s) => s.name)
-    .filter((s, i, all) => all.findIndex((o) => o.name === s.name && o.date === s.date) === i)
     .sort((a, b) => desc(a.date, b.date))
-    .slice(0, SUMMARY_LIMITS.surgeries)
     .map((s, i) => compact({ id: `sx${i + 1}`, ...s }));
 
-  // ── Allergies: all of them, never capped ──
-  const seenAllergy = new Set<string>();
-  const allergies: SummaryAllergy[] = [];
-  for (const a of raw.PatientAllergyDetailsModelDataList ?? []) {
-    const allergen = str(a.AllergyName);
-    if (!allergen || seenAllergy.has(allergen.toLowerCase())) continue;
-    seenAllergy.add(allergen.toLowerCase());
-    allergies.push(compact({ id: `al${allergies.length + 1}`, type: str(a.TypeOfallergy), allergen }));
-  }
+  // -- Allergies: every row, in the order the HIS returns them --
+  const allergies: SummaryAllergy[] = (raw.PatientAllergyDetailsModelDataList ?? [])
+    .filter((a) => str(a.AllergyName))
+    .map((a, i) => compact({ id: `al${i + 1}`, type: str(a.TypeOfallergy), allergen: str(a.AllergyName)! }));
 
-  // ── Latest vitals ──
-  const v = [...(raw.PatientVitalsMetricsModelDataList ?? [])]
-    .map((r) => ({ r, date: normalizeHisDate(r.VitalSignDate) }))
-    .sort((a, b) => desc(a.date, b.date))[0];
-  const bp = v && str(v.r.BPSystolic) && str(v.r.BPDiastolic) ? `${str(v.r.BPSystolic)}/${str(v.r.BPDiastolic)}` : undefined;
-  const latestVitals = v
-    ? compact({
-        id: 'vt1',
-        date: v.date,
-        bp,
-        pulse: tidyNumber(v.r.Pulse),
-        respiration: tidyNumber(v.r.Respiration),
-        spo2: tidyNumber(v.r.SPO2),
-        temperature: tidyNumber(v.r.Temperature),
-        consciousness: str(v.r.Consciousness),
-        o2FlowRate: tidyNumber(v.r.O2FlowRate),
-      })
-    : undefined;
+  // -- Vitals: every row, newest first (vt1 is the latest set) --
+  const vitals: SummaryVitals[] = (raw.PatientVitalsMetricsModelDataList ?? [])
+    .map((r) => ({
+      date: normalizeHisDate(r.VitalSignDate),
+      bp: str(r.BPSystolic) && str(r.BPDiastolic) ? `${str(r.BPSystolic)}/${str(r.BPDiastolic)}` : undefined,
+      pulse: tidyNumber(r.Pulse),
+      respiration: tidyNumber(r.Respiration),
+      spo2: tidyNumber(r.SPO2),
+      temperature: tidyNumber(r.Temperature),
+      consciousness: str(r.Consciousness),
+      o2FlowRate: tidyNumber(r.O2FlowRate),
+    }))
+    .sort((a, b) => desc(a.date, b.date))
+    .map((v, i) => compact({ id: `vt${i + 1}`, ...v }));
 
   const latestEpisode = [...(raw.PatientClinicalEpisodeMetricsModelDataList ?? [])].sort((a, b) =>
     desc(normalizeHisDate(a.VisitDate), normalizeHisDate(b.VisitDate)),
@@ -443,7 +427,131 @@ export function normalizeLastVisitsInfo(
   const patientInfo = latestEpisode ? compact({ age: str(latestEpisode.FullAge), gender: str(latestEpisode.Gender) }) : undefined;
   const patient = patientInfo && Object.keys(patientInfo).length ? patientInfo : undefined;
 
-  return compact({ patient, visits, notes, diagnoses, medications, results, surgeries, allergies, latestVitals });
+  return compact({ patient, visits, notes, diagnoses, medications, results, surgeries, allergies, vitals, latestVitals: vitals[0] });
+}
+
+/**
+ * The subset of `normalizeLastVisitsInfo` that goes into the LLM prompt, with the ids unchanged, so every
+ * cited id also exists in the full data. Long text is cut here, not in the data the card shows.
+ *
+ * - the newest `SUMMARY_LIMITS.visits` visits, and only the notes, diagnoses, medicines of those;
+ * - notes: at most 2 per visit, copied (identical) notes collapsed;
+ * - medicines: one row per drug (the latest prescription), running ones first;
+ * - results: the latest value per test from the most recent `resultDays`, noise rows dropped, panic first;
+ * - vitals: the latest set only.
+ */
+export function reduceForModel(data: VisitSummaryData): VisitSummaryData {
+  const visits = data.visits.slice(0, SUMMARY_LIMITS.visits);
+  const keptVisit = new Set(visits.map((v) => v.id));
+  const ofKeptVisit = <T extends { visitId?: string }>(row: T) => row.visitId !== undefined && keptVisit.has(row.visitId);
+
+  // Notes: at most 2 per visit; the HIS copies a note forward unchanged, so identical bodies count once.
+  const notes: SummaryNote[] = [];
+  const seenNote = new Set<string>();
+  const perVisit = new Map<string, number>();
+  for (const n of data.notes.filter(ofKeptVisit)) {
+    const body = {
+      chiefComplaint: cap(n.chiefComplaint, SUMMARY_LIMITS.noteChars),
+      historyOfPresentIllness: cap(n.historyOfPresentIllness, SUMMARY_LIMITS.noteChars),
+      examination: cap(n.examination, SUMMARY_LIMITS.noteChars),
+      assessmentPlan: cap(n.assessmentPlan, SUMMARY_LIMITS.noteChars),
+    };
+    const visitId = n.visitId!;
+    const key = `${visitId}|${JSON.stringify(body)}`;
+    if (seenNote.has(key) || (perVisit.get(visitId) ?? 0) >= SUMMARY_LIMITS.notesPerVisit) continue;
+    seenNote.add(key);
+    perVisit.set(visitId, (perVisit.get(visitId) ?? 0) + 1);
+    notes.push(compact({ id: n.id, visitId, date: n.date, doctor: n.doctor, ...body }));
+  }
+
+  // Diagnoses: once per visit and disease.
+  const seenDx = new Set<string>();
+  const diagnoses = data.diagnoses.filter(ofKeptVisit).filter((d) => {
+    const key = `${d.visitId}|${d.diagnosis.toLowerCase()}`;
+    if (seenDx.has(key)) return false;
+    seenDx.add(key);
+    return true;
+  });
+
+  // Medicines: the latest prescription per drug, running ones first.
+  const latestByDrug = new Map<string, SummaryMedication>();
+  for (const m of data.medications.filter(ofKeptVisit)) {
+    const key = m.name.toLowerCase();
+    const previous = latestByDrug.get(key);
+    if (!previous || (m.prescribedOn ?? '') > (previous.prescribedOn ?? '')) latestByDrug.set(key, m);
+  }
+  const medications = [...latestByDrug.values()]
+    .sort((a, b) => Number(b.active) - Number(a.active) || desc(a.prescribedOn, b.prescribedOn))
+    .slice(0, SUMMARY_LIMITS.medications);
+
+  /** Drops text rows inside numeric tests (REMARKS, SAMPLE, ...) and raw machine data (sensitivity XML). */
+  const isNumeric = (r: SummaryResult) => r.kind === 'lab' && r.value !== undefined && Number.isFinite(Number(r.value));
+  const dropNoise = (rows: SummaryResult[]): SummaryResult[] => {
+    const numericOrders = new Set(rows.filter((r) => isNumeric(r) && r.testOrderItemId).map((r) => r.testOrderItemId!));
+    return rows
+      .filter((r) => isNumeric(r) || !r.testOrderItemId || !numericOrders.has(r.testOrderItemId))
+      .filter((r) => !/&lt;|<\w+>/.test(r.value ?? ''));
+  };
+  const rank = (r: SummaryResult) => (r.panic ? 0 : r.abnormal ? 1 : 2);
+
+  /** Latest row per test, within `resultDays` of the newest row. */
+  const latestPerTest = (rows: SummaryResult[]): SummaryResult[] => {
+    const withValue = rows.filter((r) => r.value !== undefined && r.date);
+    const newest = withValue.reduce((max, r) => (r.date! > max ? r.date! : max), '');
+    if (!newest) return [];
+    const cutoff = minusDays(newest, SUMMARY_LIMITS.resultDays);
+    const latest: SummaryResult[] = [];
+    for (const group of groupBy(withValue, testKey).values()) {
+      const [last] = [...group].sort((a, b) => desc(a.date, b.date));
+      if (!last || last.date! < cutoff) continue;
+      latest.push(last);
+    }
+    return latest.sort((a, b) => rank(a) - rank(b) || desc(a.date, b.date));
+  };
+
+  const labs = latestPerTest(dropNoise(data.results.filter((r) => r.kind === 'lab')));
+  const reports = latestPerTest(dropNoise(data.results.filter((r) => r.kind !== 'lab'))).map((r) =>
+    compact({ ...r, value: cap(r.value, SUMMARY_LIMITS.reportChars), previousValue: undefined, previousDate: undefined }),
+  );
+  // Never cut a panic result to fit a limit.
+  const results = [
+    ...labs.slice(0, Math.max(SUMMARY_LIMITS.labResults, labs.filter((r) => r.panic).length)),
+    ...reports.slice(0, Math.max(SUMMARY_LIMITS.reports, reports.filter((r) => r.panic).length)),
+  ];
+
+  // Surgeries: once per surgery and date.
+  const seenSurgery = new Set<string>();
+  const surgeries = data.surgeries
+    .filter((s) => {
+      const key = `${s.name?.toLowerCase()}|${s.date}`;
+      if (seenSurgery.has(key)) return false;
+      seenSurgery.add(key);
+      return true;
+    })
+    .slice(0, SUMMARY_LIMITS.surgeries);
+
+  // Allergies: every one, never capped; the same allergen listed twice counts once.
+  const seenAllergy = new Set<string>();
+  const allergies = data.allergies.filter((a) => {
+    const key = a.allergen.toLowerCase();
+    if (seenAllergy.has(key)) return false;
+    seenAllergy.add(key);
+    return true;
+  });
+
+  const vitals = data.vitals.slice(0, 1);
+  return compact({
+    patient: data.patient,
+    visits,
+    notes,
+    diagnoses: diagnoses.map((d) => compact({ ...d, remarks: cap(d.remarks, SUMMARY_LIMITS.remarkChars) })),
+    medications: medications.map((m) => compact({ ...m, remarks: cap(m.remarks, SUMMARY_LIMITS.remarkChars) })),
+    results,
+    surgeries,
+    allergies,
+    vitals,
+    latestVitals: vitals[0],
+  });
 }
 
 /** Every id the LLM is allowed to cite. */
@@ -456,7 +564,7 @@ export function summaryIds(data: VisitSummaryData): Set<string> {
     ...data.results,
     ...data.surgeries,
     ...data.allergies,
-    ...(data.latestVitals ? [data.latestVitals] : []),
+    ...data.vitals,
   ].map((x) => x.id);
   return new Set(ids);
 }

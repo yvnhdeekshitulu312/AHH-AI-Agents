@@ -3,7 +3,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import { z } from 'zod';
 import type { PatientContext } from '../core/types.js';
 import type { HisApi } from '../his/client.js';
-import { normalizeLastVisitsInfo, summaryIds, type VisitSummaryData } from '../his/lastVisitsNormalizer.js';
+import { normalizeLastVisitsInfo, reduceForModel, summaryIds, type VisitSummaryData } from '../his/lastVisitsNormalizer.js';
 import type { ModelFactory } from '../llm/provider.js';
 import { visitSummaryPrompt } from './prompt.js';
 
@@ -68,7 +68,9 @@ export async function buildVisitSummary(params: VisitSummaryParams): Promise<Vis
 
   const hisStart = Date.now();
   const raw = await his.fetchLastVisitsInfo(ctx.patientId, ctx.hospitalId);
+  // The response carries every row the HIS returned; the prompt gets the reduced subset (same item ids).
   const data = normalizeLastVisitsInfo(raw, ctx.admissionId, today);
+  const forModel = reduceForModel(data);
   const hisMs = Date.now() - hisStart;
 
   const base = { data, droppedHighlights: 0, usage: {}, timing: { hisMs, llmMs: 0 } };
@@ -84,7 +86,7 @@ export async function buildVisitSummary(params: VisitSummaryParams): Promise<Vis
     const result = await generateText({
       model: getModel(model),
       system: `${visitSummaryPrompt}\n\nToday's date: ${today}.`,
-      prompt: `Patient data:\n${JSON.stringify(data)}`,
+      prompt: `Patient data:\n${JSON.stringify(forModel)}`,
       output: Output.object({ schema: outputSchema }),
       temperature: 0,
       // The task is summarising given data, not reasoning. Default thinking took ~15 s on gemini-3.5-flash.
@@ -92,7 +94,7 @@ export async function buildVisitSummary(params: VisitSummaryParams): Promise<Vis
       abortSignal: signal ? AbortSignal.any([timeout, signal]) : timeout,
     });
 
-    const allowed = summaryIds(data);
+    const allowed = summaryIds(forModel);
     const summary = checkCitations(result.output.summary, allowed, MAX_SUMMARY_SENTENCES);
     const highlights = checkCitations(result.output.highlights, allowed, MAX_HIGHLIGHTS);
     const dropped = summary.dropped + highlights.dropped;
